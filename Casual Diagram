@@ -1,0 +1,31 @@
+```{r include=FALSE}
+library(tidyverse)
+library(ggformula)
+library(rethinking)
+library(CalvinBayes)
+library(dagitty)
+```
+
+```{r}
+fastball_data <- read.csv("fastball_data.csv")
+```
+
+```{r}
+diag <- dagitty("dag{
+   arm_angle -> whiff_rate
+   velo -> whiff_rate
+   spin_rate -> whiff_rate
+   ivb -> whiff_rate
+   extension -> whiff_rate
+   spin_rate -> ivb
+   arm_angle -> velo
+}")
+gg_dag(diag,
+       size = 0,
+       )
+```
+
+All of our predictors have an effect on whiff_rate. In addition, spin_rate affects ivb because the spin rate of a ball has an effect on the induced vertical break, or how much a pitch resists the force of gravity and appears to rise, which is partly a result of spin. arm_angle also affects velo because especially from some lower arm angles it's harder to generate a high amount of velocity. We will also have an interaction between arm_angle and ivb, because the angle a pitch appears to be coming from can affect the effectiveness of the vertical break on a fastball.
+
+
+
