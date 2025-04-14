@@ -1,0 +1,13 @@
+```{r}
+library(dplyr)
+
+fastball_data <- read.csv("fastball_data.csv")
+glimpse(fastball_data)
+```
+
+The data is from https://baseballsavant.mlb.com/. 
+
+How does velocity affect the whiff rate of a 4-Seam Fastball of MLB pitchers?
+
+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
+
