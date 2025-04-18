@@ -1,13 +1,136 @@
-```{r}
-library(dplyr)
+---
+title: "Fastball Study"
+author: "Joel Essenburg, Seth Buit, and Ben Vant Land"
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+editor: visual
+---
 
+```{r include=FALSE}
+library(tidyverse)
+library(ggformula)
+library(rethinking)
+library(CalvinBayes)
+library(dagitty)
+```
+
+## Data Wrangling
+
+```{r}
+df1 <- read.csv("stats.csv") 
+df2 <- read.csv("pitch-arsenal-stats (1).csv") 
+df3 <- read.csv("savant_data.csv") 
+
+merged_data <- df1 %>%
+  left_join(df3[, c("player_id", "release_extension")], by = "player_id") %>%
+  left_join(df2[, c("player_id", "whiff_percent")], by = "player_id")
+
+fastball_data <- na.omit(merged_data)
+
+fastball_data <- fastball_data %>%
+  rename(
+    name = last_name..first_name,
+    velo = ff_avg_speed,
+    spin_rate = ff_avg_spin,
+    ivb = ff_avg_break_z_induced,
+    extension = release_extension,
+    whiff_rate = whiff_percent
+  ) %>%
+  select(-year) %>% 
+  mutate(
+    first_name = gsub(".*, ", "", name),
+    last_name = gsub(",.*", "", name),
+    name = paste(first_name, last_name),
+    whiff_rate = whiff_rate / 100
+  ) %>%
+  select(-first_name, -last_name) 
+ 
+write.csv(fastball_data, "fastball_data.csv", row.names = FALSE)
+```
+
+## Data Glimpse
+
+```{r}
 fastball_data <- read.csv("fastball_data.csv")
 glimpse(fastball_data)
 ```
 
-The data is from https://baseballsavant.mlb.com/. 
+The data is from https://baseballsavant.mlb.com/. Baseball Savant has in-depth leaderboards for a variety of different MLB statistics, that are all available to download for free. We downloaded 3 different spreadsheets and wrangled them together (shown above) with the variables we want to include.
+
+## Research Question
 
 How does velocity affect the whiff rate of a 4-Seam Fastball of MLB pitchers?
 
-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
+## Causal Diagram
+
+```{r}
+diag <- dagitty("dag{
+   arm_angle -> whiff_rate
+   velo -> whiff_rate
+   spin_rate -> whiff_rate
+   ivb -> whiff_rate
+   extension -> whiff_rate
+   spin_rate -> ivb
+   arm_angle -> velo
+   arm_angle -> interaction
+   ivb -> interaction
+}")
+gg_dag(diag,
+       size = 0,
+       )
+```
+
+Velocity and whiff rate is the main relationship we want to look at, so velocity will be our key predictor. Extension, or how far to the plate a pitcher releases the ball, is a precision covariate because it only affects whiff rate, so it will also be included in our model. In addition, spin rate affects ivb because the spin rate of a ball has an effect on the induced vertical break, or how much a pitch resists the force of gravity and appears to rise, which is partly a result of spin. Since both these variables have an effect on whiff rate, they are also precision covariates and will be included in the mode. Arm angle also affects velocity because especially from some lower arm angles it's harder to generate a high amount of velocity. It also affects whiff rate, so it's a confounder and will be included in the model. Finally, we will have an interaction between arm_angle and ivb, because the angle a pitch appears to be coming from can affect the effectiveness of the vertical break on a fastball. In this case this relationship is a moderator, so it will be included in the mode.
+
+## Model Description
+
+$$\text{whiff_rate} \sim \text{beta}(\omega, \kappa)$$ $$\text{logit}(\omega) = \beta_0 + \beta_1*\text{velo}+\beta_2*\text{spin_rate}+\beta_3*\text{extension}+\beta_4*\text(\text{arm_angle}*\text{ivb})+\beta_5*\text{arm_angle}+\beta_6*\text{ivb}$$ $$\beta_0 \sim \text{Norm}(0.217, 0.05)$$ $$\beta_{1-6} \sim \text{Norm}(0,1)$$ $$\kappa \sim \text{LogNorm}(0,2)$$ $$\alpha = \omega * (\kappa - 2) + 1$$ $$\beta = (1 - \omega) * (\kappa - 2) + 1$$
+
+## Prior Predictive Distribution
+
+```{r}
+n_sim <- 100 
+prior_pred_dist <- tibble(
+  sim_id = c(1:n_sim)) |>
+  mutate(
+    b0 = rnorm(n_sim, mean = 0.217, sd = 0.05),
+    b1 = rnorm(n_sim, mean = 0, sd = 0.05),
+    b2 = rnorm(n_sim, mean = 0, sd = 0.05),
+    b3 = rnorm(n_sim, mean = 0, sd = 0.05),
+    b4 = rnorm(n_sim, mean = 0, sd = 0.05),
+    b5 = rnorm(n_sim, mean = 0, sd = 0.05),
+    b6 = rnorm(n_sim, mean = 0, sd = 0.05),
+    kappa = rlnorm(n_sim, meanlog = 0, sdlog = 0.05)
+  ) |>
+  rowwise()  |> 
+  mutate(
+    omega = list(inv_logit(b0 + 
+                             b1 * fastball_data$velo + b2 * fastball_data$spin_rate + b3 * fastball_data$extension + b4 * (fastball_data$arm_angle * fastball_data$ivb) + b5 * fastball_data$arm_angle + b6 * fastball_data$ivb)),
+    velo = list(fastball_data$velo),
+    spin_rate = list(fastball_data$spin_rate),
+    extension = list(fastball_data$extension),
+    arm_angle = list(fastball_data$arm_angle),
+    ivb = list(fastball_data$ivb)
+  ) |>
+  unnest(cols = c(velo, spin_rate, extension, arm_angle, ivb,omega)) |>
+  ungroup() |>
+  mutate(
+    alpha = omega * (kappa) + 1,
+    beta = (1 - omega) * (kappa) + 1) |>
+  rowwise() |>
+  mutate(
+    sim_whiff_rate = rbeta(1, shape1 = alpha, shape2 = beta),
+  ) |>
+  ungroup()
+glimpse(prior_pred_dist)
+```
+
+```{r}
+gf_dens(~sim_whiff_rate, group = ~sim_id, 
+        data = prior_pred_dist)
+```
+
+From our prior predictive check, it appears that about half of our distributions are right skewed, and the other half are left skewed with the right skewed peak being around 0.10 and the left skewed peak being around 0.90. We don't think this is correct but aren't entirely sure how to fix it. We started with priors of Norm(0,1) but changed them after the peaks were almost 1.00 and 0.00. 
 
