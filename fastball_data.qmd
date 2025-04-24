@@ -128,8 +128,7 @@ prior_pred_dist <- tibble(
   ) |>
   rowwise()  |> 
   mutate(
-    omega = list(inv_logit(b0 + 
-                             b1 * fastball_data$velo + b2 * fastball_data$spin_rate + b3 * fastball_data$extension + b4 * (fastball_data$arm_angle * fastball_data$ivb) + b5 * fastball_data$arm_angle + b6 * fastball_data$ivb)),
+    omega = list(inv_logit(b0 + b1 * fastball_data$velo + b2 * fastball_data$spin_rate + b3 * fastball_data$extension + b4 * (fastball_data$arm_angle * fastball_data$ivb) + b5 * fastball_data$arm_angle + b6 * fastball_data$ivb)),
     velo = list(fastball_data$velo),
     spin_rate = list(fastball_data$spin_rate),
     extension = list(fastball_data$extension),
@@ -163,6 +162,10 @@ data {
   int<lower=1> n;     // number of observations
   vector<lower=0,upper=1>[n] whiff_rate;    // response
   vector[n] velo;     // predictor
+  vector[n] spin_rate;     // predictor
+  vector[n] extension;     // predictor
+  vector[n] arm_angle;     // predictor
+  vector[n] ivb;     // predictor
 }
 parameters {
   real<lower=0> kappa;  // concentration of beta dist
@@ -179,10 +182,10 @@ model {
   vector[n] omega;
   vector[n] alpha;
   vector[n] beta;
-  for ( i in 1:n ) {  ??????????????????????
-    omega[i] = inv_logit(b0 + b1 * Year_Built_Z[i]);???????????
+  for ( i in 1:n ) {  
+    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle*ivb)[i]+ b5 * arm_angle[i]+ b6 * ivb[i]                   );
     alpha[i] = omega[i] * (kappa - 2) + 1;
-    beta[i] = (1 - omega[i]) * (kappa - 2) + 1;??????????????
+    beta[i] = (1 - omega[i]) * (kappa - 2) + 1;
   }
   
   b0 ~ normal(-1.283235, 1);
@@ -196,17 +199,21 @@ model {
   whiff_rate ~ beta(alpha, beta); // have to use alpha, beta parameterization for beta()
 } 
 
-?????????????????
+
 generated quantities {
  // this is not really required - only if you want values of omega, alpha, beta included in your fitted model
   vector[n] omega;
   vector[n] alpha;
   vector[n] beta;
   for (i in 1:n) {
-    omega[i] = inv_logit(b0 + b1 * Year_Built_Z[i]); // if you want stan to compute modes for each data row
+    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle*ivb)[i]+ b5 * arm_angle[i]+ b6 * ivb[i]); // if you want stan to compute modes for each data row       dis line
     alpha[i] = omega[i] * (kappa - 2) + 1; // if you want the beta parameters alpha and beta for each row
     beta[i] = (1 - omega[i]) * (kappa - 2) + 1;
   }
 }'
+```
+
+```{r}
+fastball_model <- stan(model_code = stan_beta_fastball, data = fastball_data)
 ```
 
