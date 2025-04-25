@@ -183,7 +183,7 @@ model {
   vector[n] alpha;
   vector[n] beta;
   for ( i in 1:n ) {  
-    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle*ivb)[i]+ b5 * arm_angle[i]+ b6 * ivb[i]                   );
+    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]                   );
     alpha[i] = omega[i] * (kappa - 2) + 1;
     beta[i] = (1 - omega[i]) * (kappa - 2) + 1;
   }
