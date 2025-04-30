@@ -59,13 +59,16 @@ write.csv(fastball_data, "fastball_data.csv", row.names = FALSE)
 fastball_data <- read.csv("fastball_data.csv")
 glimpse(fastball_data)
 ```
-## Standardize Data
+## Standardize and Data
 ```{r}
 # Columns to standardize
 cols_to_scale <- c("arm_angle", "velo", "spin_rate", "ivb", "extension")
 
 # Create a copy with only those columns scaled
 fastball_data[cols_to_scale] <- scale(fastball_data[cols_to_scale])
+
+fastball_data <- fastball_data |> 
+  mutate(whiff_rate = if_else(whiff_rate == 0, 1e-10, whiff_rate))
 
 # Check the result
 glimpse(fastball_data)
