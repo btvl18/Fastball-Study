@@ -14,6 +14,9 @@ library(ggformula)
 library(rethinking)
 library(CalvinBayes)
 library(dagitty)
+library(mosaic)
+library(tidybayes)
+library(bayesplot)
 ```
 
 ## Data Wrangling
@@ -169,6 +172,7 @@ data {
 }
 parameters {
   real<lower=0> kappa;  // concentration of beta dist
+  real<lower=0> kappa2;  // concentration of beta dist
   real b0;               // intercept
   real b1;              // slope for velo
   real b2;              // slope for spin_rate
@@ -185,7 +189,9 @@ model {
   for ( i in 1:n ) {  
     omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle*ivb)[i]+ b5 * arm_angle[i]+ b6 * ivb[i]                   );
     alpha[i] = omega[i] * (kappa - 2) + 1;
-    beta[i] = (1 - omega[i]) * (kappa - 2) + 1;
+    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]);
+    alpha[i] = omega[i] * (kappa2) + 1;
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
   }
   
   b0 ~ normal(-1.283235, 1);
@@ -195,7 +201,7 @@ model {
   b4 ~ cauchy(0, 2.5);
   b5 ~ cauchy(0, 2.5);
   b6 ~ cauchy(0, 2.5);
-  kappa ~ lognormal(0,2);
+  kappa2 ~ lognormal(0,2);
   whiff_rate ~ beta(alpha, beta); // have to use alpha, beta parameterization for beta()
 } 
 
@@ -206,14 +212,17 @@ generated quantities {
   vector[n] alpha;
   vector[n] beta;
   for (i in 1:n) {
-    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle*ivb)[i]+ b5 * arm_angle[i]+ b6 * ivb[i]); // if you want stan to compute modes for each data row       dis line
-    alpha[i] = omega[i] * (kappa - 2) + 1; // if you want the beta parameters alpha and beta for each row
-    beta[i] = (1 - omega[i]) * (kappa - 2) + 1;
+    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]); // if you want stan to compute modes for each data row       dis line
+    alpha[i] = omega[i] * (kappa2) + 1; // if you want the beta parameters alpha and beta for each row
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
   }
 }'
 ```
 
 ```{r}
-fastball_model <- stan(model_code = stan_beta_fastball, data = fastball_data)
+composed_fastball <- compose_data(fastball_data)
+
+
+fastball_model <- stan(model_code = stan_beta_fastball, data = composed_fastball)
 ```
 
