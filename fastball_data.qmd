@@ -14,7 +14,6 @@ library(ggformula)
 library(rethinking)
 library(CalvinBayes)
 library(dagitty)
-library(mosaic)
 library(tidybayes)
 library(bayesplot)
 ```
@@ -223,10 +222,15 @@ generated quantities {
 composed_fastball <- compose_data(fastball_data)
 
 
-fastball_model <- stan(model_code = stan_beta_fastball, data = composed_fastball)
+fastball_model <- stan(model_code = stan_beta_fastball, data = composed_fastball, chains =4, iter = 2000, refresh = 0)
 ```
 ```{r}
 fastball_model
 ```
 
+
+```{r}
+gf_dens(~sim_whiff_rate, group = ~sim_id, 
+        data = prior_pred_dist)
+```
 
