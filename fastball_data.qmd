@@ -219,13 +219,28 @@ generated quantities {
 ```
 
 ```{r}
+#compose the data
 composed_fastball <- compose_data(fastball_data)
-
-
-fastball_model <- stan(model_code = stan_beta_fastball, data = composed_fastball, chains =4, iter = 2000, refresh = 0)
 ```
+
 ```{r}
-fastball_model
+refit_model <- FALSE
+model_file <- "fastball_model_fit.RDS"
+if (refit_model){
+  fastball_model_fit <- stan(model_code = stan_beta_fastball,
+                        data = composed_fastball,
+                        chains = 4,
+                        iter = 2000,
+                        refresh = 0)
+  saveRDS(fastball_model_fit, file = model_file)
+}else{
+  # if you wanted to save an RDS fitted model locally you'd do
+  fastball_model_fit <- readRDS(model_file)
+}
+```
+
+```{r}
+fastball_model_fit
 ```
 
 
