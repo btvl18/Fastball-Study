@@ -1,0 +1,371 @@
+---
+title: "Fastball Study"
+author: "Joel Essenburg, Seth Buit, and Ben Vant Land"
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+editor: visual
+---
+
+```{r include=FALSE}
+library(tidyverse)
+library(ggformula)
+library(rethinking)
+library(CalvinBayes)
+library(dagitty)
+library(tidybayes)
+library(bayesplot)
+library(rstan)
+```
+
+## Data Wrangling
+
+```{r}
+#| include: false
+df1 <- read.csv("stats.csv") 
+df2 <- read.csv("pitch-arsenal-stats (1).csv") 
+df3 <- read.csv("savant_data.csv") 
+
+merged_data <- df1 %>%
+  left_join(df3[, c("player_id", "release_extension")], by = "player_id") %>%
+  left_join(df2[, c("player_id", "whiff_percent")], by = "player_id")
+
+fastball_data <- na.omit(merged_data)
+
+fastball_data <- fastball_data %>%
+  rename(
+    name = last_name..first_name,
+    velo = ff_avg_speed,
+    spin_rate = ff_avg_spin,
+    ivb = ff_avg_break_z_induced,
+    extension = release_extension,
+    whiff_rate = whiff_percent
+  ) %>%
+  select(-year) %>% 
+  mutate(
+    first_name = gsub(".*, ", "", name),
+    last_name = gsub(",.*", "", name),
+    name = paste(first_name, last_name),
+    whiff_rate = whiff_rate / 100
+  ) %>%
+  select(-first_name, -last_name) 
+ 
+write.csv(fastball_data, "fastball_data.csv", row.names = FALSE)
+```
+
+## Data Glimpse
+
+```{r}
+fastball_data <- read.csv("fastball_data.csv")
+glimpse(fastball_data)
+```
+## Standardize and Data
+```{r}
+# Columns to standardize
+cols_to_scale <- c("arm_angle", "velo", "spin_rate", "ivb", "extension")
+
+# Create a copy with only those columns scaled
+fastball_data[cols_to_scale] <- scale(fastball_data[cols_to_scale])
+
+fastball_data <- fastball_data |> 
+  mutate(whiff_rate = if_else(whiff_rate == 0, 1e-10, whiff_rate))
+
+# Check the result
+glimpse(fastball_data)
+```
+
+The data is from https://baseballsavant.mlb.com/. Baseball Savant has in-depth leaderboards for a variety of different MLB statistics, that are all available to download for free. We downloaded 3 different spreadsheets and wrangled them together (shown above) with the variables we want to include.
+
+## Research Question
+
+How does velocity affect the whiff rate of a 4-seam fastball of MLB pitchers?
+
+## Causal Diagram
+
+```{r}
+diag <- dagitty("dag{
+   arm_angle -> whiff_rate
+   velo -> whiff_rate
+   spin_rate -> whiff_rate
+   ivb -> whiff_rate
+   extension -> whiff_rate
+   spin_rate -> ivb
+   arm_angle -> velo
+   arm_angle -> interaction
+   ivb -> interaction
+}")
+gg_dag(diag,
+       size = 0,
+       )
+```
+
+Velocity and whiff rate is the main relationship we want to look at, so velocity will be our key predictor. Extension, or how far to the plate a pitcher releases the ball, is a precision covariate because it only affects whiff rate, so it will also be included in our model. In addition, spin rate affects ivb because the spin rate of a ball has an effect on the induced vertical break, or how much a pitch resists the force of gravity and appears to rise, which is partly a result of spin. Since both these variables have an effect on whiff rate, they are also precision covariates and will be included in the mode. Arm angle also affects velocity because especially from some lower arm angles it's harder to generate a high amount of velocity. It also affects whiff rate, so it's a confounder and will be included in the model. Finally, we will have an interaction between arm_angle and ivb, because the angle a pitch appears to be coming from can affect the effectiveness of the vertical break on a fastball. In this case this relationship is a moderator, so it will be included in the mode.
+
+## Model Description
+
+$$\text{whiff rate} \sim \text{beta}(\omega, \kappa)$$ 
+$$\text{logit}(\omega) = \beta_0 + \beta_1*\text{velo}+\beta_2*\text{spin rate}+\beta_3*\text{extension}+\beta_4*\text(\text{arm angle}*\text{ivb})+\beta_5*\text{arm angle}+\beta_6*\text{ivb}$$
+$$\beta_0 \sim \text{Norm}(-1.28, 1.47)$$
+$$\beta_{1-6} \sim \text{Cauchy}(0,2.5)$$ 
+$$\kappa \sim \text{LogNorm}(0,2)$$ 
+$$\alpha = \omega * \kappa + 1$$
+$$\beta = (1 - \omega) * \kappa + 1$$
+```{r}
+#Mean of wiff rate based on https://www.baseballamerica.com/stories/why-do-mlb-pitchers-focus-so-much-on-velocity-how-fastball-data-explains-baseballs-growing-search-for-speed/
+Intercept_mean <- logit(.217)
+#One sd below based on prior knowledge
+one_sd_below_mean <- logit(.06)
+
+Intercept_mean
+
+Intercept_mean-one_sd_below_mean
+```
+
+## Prior Predictive Distribution
+
+```{r}
+n_sim <- 100 
+prior_pred_dist <- tibble(
+  sim_id = c(1:n_sim)) |>
+  mutate(
+    b0 = rnorm(n_sim, mean = -1.283235, sd = 1.4683),
+    b1 = rcauchy(n_sim, location = 0, scale = 2.5),
+    b2 = rcauchy(n_sim, location = 0, scale = 2.5),
+    b3 = rcauchy(n_sim, location = 0, scale = 2.5),
+    b4 = rcauchy(n_sim, location = 0, scale = 2.5),
+    b5 = rcauchy(n_sim, location = 0, scale = 2.5),
+    b6 = rcauchy(n_sim, location = 0, scale = 2.5),
+    kappa = rlnorm(n_sim, meanlog = 0, sdlog = 2)
+  ) |>
+  rowwise()  |> 
+  mutate(
+    omega = list(inv_logit(b0 + b1 * fastball_data$velo + b2 * fastball_data$spin_rate + b3 * fastball_data$extension + b4 * (fastball_data$arm_angle * fastball_data$ivb) + b5 * fastball_data$arm_angle + b6 * fastball_data$ivb)),
+    velo = list(fastball_data$velo),
+    spin_rate = list(fastball_data$spin_rate),
+    extension = list(fastball_data$extension),
+    arm_angle = list(fastball_data$arm_angle),
+    ivb = list(fastball_data$ivb)
+  ) |>
+  unnest(cols = c(velo, spin_rate, extension, arm_angle, ivb,omega)) |>
+  ungroup() |>
+  mutate(
+    alpha = omega * (kappa) + 1,
+    beta = (1 - omega) * (kappa) + 1) |>
+  rowwise() |>
+  mutate(
+    sim_whiff_rate = rbeta(1, shape1 = alpha, shape2 = beta),
+  ) |>
+  ungroup()
+glimpse(prior_pred_dist)
+```
+
+```{r}
+gf_dens(~sim_whiff_rate, group = ~sim_id, 
+        data = prior_pred_dist)
+```
+```{r}
+gf_dens(~b1, data = prior_pred_dist) |>
+  gf_labs(title = "Prior Predictive Velocity's Slope")
+```
+We had some issues initially with our priors as we started out with priors of all Norm(0,1). This was an issue because we hadn't yet standardized our data. We then standardized the data and switched to Cauchy(0,2.5) for each of the predictors' slopes as this is a good uninformative prior. The only informative prior we were able to add was our intercept. We found the average whiff rate to be .217 (https://www.baseballamerica.com/stories/why-do-mlb-pitchers-focus-so-much-on-velocity-how-fastball-data-explains-baseballs-growing-search-for-speed/) and we believed that .06 was about one standard deviation away based on prior knowledge. We took the logits of these and found the distribution to be Norm(-1.283235, 1.4683). This gave us our current prior predictive distributions which are uninformative but sufficient. The first one gives a generally uniform shape of whiff rate which includes the general shape that we expect. The second one gives a very wide range for the slope of velocity which is to be expected with using the cauchy distribution. We believe these are sufficient because we don't have a lot of prior knowledge on our predictors and we want to give a wide range of possibilities.
+
+## Model Fit
+
+```{r}
+stan_beta_fastball <- '
+data {
+  int<lower=1> n;     // number of observations
+  vector<lower=0,upper=1>[n] whiff_rate;    // response
+  vector[n] velo;     // predictor
+  vector[n] spin_rate;     // predictor
+  vector[n] extension;     // predictor
+  vector[n] arm_angle;     // predictor
+  vector[n] ivb;     // predictor
+}
+parameters {
+  real<lower=0> kappa2;  // concentration of beta dist
+  real b0;               // intercept
+  real b1;              // slope for velo
+  real b2;              // slope for spin_rate
+  real b3;              // slope for extension
+  real b4;              // slope for interaction between arm_angle and ivb
+  real b5;              // slope for arm_angle
+  real b6;              // slope for ivb
+  
+}
+model {
+  vector[n] omega;
+  vector[n] alpha;
+  vector[n] beta;
+  for ( i in 1:n ) {  
+    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]);
+    alpha[i] = omega[i] * (kappa2) + 1;
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
+  }
+  
+  b0 ~ normal(-1.283235, 1);
+  b1 ~ cauchy(0, 2.5);
+  b2 ~ cauchy(0, 2.5);
+  b3 ~ cauchy(0, 2.5);
+  b4 ~ cauchy(0, 2.5);
+  b5 ~ cauchy(0, 2.5);
+  b6 ~ cauchy(0, 2.5);
+  kappa2 ~ lognormal(0,2);
+  whiff_rate ~ beta(alpha, beta); // have to use alpha, beta parameterization for beta()
+} 
+
+
+generated quantities {
+ // this is not really required - only if you want values of omega, alpha, beta included in your fitted model
+  vector[n] omega;
+  vector[n] alpha;
+  vector[n] beta;
+  for (i in 1:n) {
+    omega[i] = inv_logit(b0 + b1 * velo[i] + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]); // if you want stan to compute modes for each data row       dis line
+    alpha[i] = omega[i] * (kappa2) + 1; // if you want the beta parameters alpha and beta for each row
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
+  }
+  vector[n] log_lik;
+  for (i in 1:n) {
+    log_lik[i] = beta_lpdf(whiff_rate[i] | alpha[i], beta[i]); 
+  }
+}'
+```
+
+```{r}
+#compose the data
+composed_fastball <- compose_data(fastball_data)
+```
+
+```{r}
+refit_model <- FALSE
+model_file <- "fastball_model_fit.RDS"
+if (refit_model){
+  fastball_model_fit <- rstan::stan(model_code = stan_beta_fastball,
+                        data = composed_fastball,
+                        chains = 4,
+                        iter = 2000,
+                        refresh = 0)
+  saveRDS(fastball_model_fit, file = model_file)
+}else{
+  # if you wanted to save an RDS fitted model locally you'd do
+  fastball_model_fit <- readRDS(model_file)
+}
+```
+
+## Posterior
+
+```{r}
+fastball_model_fit
+```
+
+```{r}
+draws <- as_draws_array(fastball_model_fit)
+
+mcmc_trace(draws, pars = c("kappa2","b0", "b1","b2","b3","b4","b5","b6","omega[1]", "omega[2]","omega[3]", "omega[4]"))
+
+```
+Our trace plots all look like fuzzy caterpillars with lots of overlap. There is great mixing and no obvious patterns in any of the plots. There are also no trends positive or negative in any of them either. Since the n_eff values of all coefficients are in the thousands and all the Rhat values are 1, there's strong evidence that the model is producing accurate results.
+
+```{r}
+psamp <- as.data.frame(fastball_model_fit) |>
+  select(-lp__) |>
+  pivot_longer(cols = "b1",
+               names_to = 'parameter',
+               values_to = 'value')
+gf_dens(~value, data = psamp) |>
+  gf_labs(title = "Distribution of Velocity's Slope")
+```
+From the model summary, we can see that b1, the coefficient for velocity, has a mean value of 0.18. The graph shows the spread of the coefficient, which ranges from about 0.05 to 0.3. Since the coefficient is positive, this means that fastball velocity and fastball whiff rate have a positive relationship, or when velocity increases, so does whiff rate. 
+
+## Model Comparison
+
+```{r}
+stan_minus_fastball <- '
+data {
+  int<lower=1> n;     // number of observations
+  vector<lower=0,upper=1>[n] whiff_rate;    // response
+  vector[n] velo;     // predictor
+  vector[n] spin_rate;     // predictor
+  vector[n] extension;     // predictor
+  vector[n] arm_angle;     // predictor
+  vector[n] ivb;     // predictor
+}
+parameters {
+  real<lower=0> kappa2;  // concentration of beta dist
+  real b0;               // intercept
+  real b2;              // slope for spin_rate
+  real b3;              // slope for extension
+  real b4;              // slope for interaction between arm_angle and ivb
+  real b5;              // slope for arm_angle
+  real b6;              // slope for ivb
+  
+}
+model {
+  vector[n] omega;
+  vector[n] alpha;
+  vector[n] beta;
+  for ( i in 1:n ) {  
+    omega[i] = inv_logit(b0 + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]);
+    alpha[i] = omega[i] * (kappa2) + 1;
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
+  }
+  
+  b0 ~ normal(-1.283235, 1);
+  b2 ~ cauchy(0, 2.5);
+  b3 ~ cauchy(0, 2.5);
+  b4 ~ cauchy(0, 2.5);
+  b5 ~ cauchy(0, 2.5);
+  b6 ~ cauchy(0, 2.5);
+  kappa2 ~ lognormal(0,2);
+  whiff_rate ~ beta(alpha, beta); // have to use alpha, beta parameterization for beta()
+} 
+
+
+generated quantities {
+ // this is not really required - only if you want values of omega, alpha, beta included in your fitted model
+  vector[n] omega;
+  vector[n] alpha;
+  vector[n] beta;
+  for (i in 1:n) {
+    omega[i] = inv_logit(b0 + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]); // if you want stan to compute modes for each data row       dis line
+    alpha[i] = omega[i] * (kappa2) + 1; // if you want the beta parameters alpha and beta for each row
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
+  }
+  vector[n] log_lik;
+  for (i in 1:n) {
+    log_lik[i] = beta_lpdf(whiff_rate[i] | alpha[i], beta[i]); 
+  }
+}'
+```
+
+```{r}
+refit_model <- FALSE
+model_minus_file <- "fastball_minus_fit.RDS"
+if (refit_model){
+  fastball_minus_fit <- rstan::stan(model_code = stan_minus_fastball,
+                        data = composed_fastball,
+                        chains = 4,
+                        iter = 2000,
+                        refresh = 0)
+  saveRDS(fastball_minus_fit, file = model_minus_file)
+}else{
+  # if you wanted to save an RDS fitted model locally you'd do
+  fastball_minus_fit <- readRDS(model_minus_file)
+}
+```
+
+```{r}
+rethinking::compare(fastball_model_fit,fastball_minus_fit, func=WAIC)
+```
+
+In our model comparison we found that our original model that contains velocity as a predictor is better than our second model that does not include velocity as a predictor. The model is better because the original model's WAIC score is 17.6 below the 2nd model's. While this gives us evidence that the model with velocity is better the SE's for both WAIC scores are both high 187.77 for the model with velocity and 168.76 for the model without. This means that we cannot be certain that the model is in fact better based on the WAIC score alone.
+
+## Conclusion
+
+In conclusion, the velocity of 4-seam fastballs thrown by MLB pitchers has a positive relationship with the fastball's whiff rate. This is seen in the model summary, which shows a mean value of 0.18 for the coefficient for velocity in the model, and the graph of the posterior that shows a distribution that stays positive and is never negative. In addition, comparing the model with a model that does not use velocity as a predictor, shows that the model with velocity was more accurate in predicting the data. The WAIC of the model with velocity was significantly lower, although the standard was high, which caused us to have some caution. However, there is strong evidence that the relationship between 4-seam fastball velocity and whiff rate share a positive relationship.
+
+
+
+
