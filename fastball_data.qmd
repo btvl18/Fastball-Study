@@ -16,6 +16,7 @@ library(CalvinBayes)
 library(dagitty)
 library(tidybayes)
 library(bayesplot)
+library(rstan)
 ```
 
 ## Data Wrangling
@@ -103,9 +104,12 @@ Velocity and whiff rate is the main relationship we want to look at, so velocity
 ## Model Description
 
 $$\text{whiff_rate} \sim \text{beta}(\omega, \kappa)$$ 
-$$\text{logit}(\omega) = \beta_0 + \beta_1*\text{velo}+\beta_2*\text{spin_rate}+\beta_3*\text{extension}+\beta_4*\text(\text{arm_angle}*\text{ivb})+\beta_5*\text{arm_angle}+\beta_6*\text{ivb}$$ $$\beta_0 \sim \text{Norm}(0.217, 0.05)$$ $$\beta_{1-6} \sim \text{Norm}(0,1)$$ $$\kappa \sim \text{LogNorm}(0,2)$$ 
-$$\alpha = \omega * (\kappa - 2) + 1$$
-$$\beta = (1 - \omega) * (\kappa - 2) + 1$$
+$$\text{logit}(\omega) = \beta_0 + \beta_1*\text{velo}+\beta_2*\text{spin_rate}+\beta_3*\text{extension}+\beta_4*\text(\text{arm_angle}*\text{ivb})+\beta_5*\text{arm_angle}+\beta_6*\text{ivb}$$
+$$\beta_0 \sim \text{Norm}(-1.28, 1.47)$$
+$$\beta_{1-6} \sim \text{Cauchy}(0,2.5)$$ 
+$$\kappa \sim \text{LogNorm}(0,2)$$ 
+$$\alpha = \omega * \kappa + 1$$
+$$\beta = (1 - \omega) * \kappa + 1$$
 ```{r}
 #Mean of wiff rate based on https://www.baseballamerica.com/stories/why-do-mlb-pitchers-focus-so-much-on-velocity-how-fastball-data-explains-baseballs-growing-search-for-speed/
 Intercept_mean <- logit(.217)
@@ -215,6 +219,10 @@ generated quantities {
     alpha[i] = omega[i] * (kappa2) + 1; // if you want the beta parameters alpha and beta for each row
     beta[i] = (1 - omega[i]) * (kappa2) + 1;
   }
+  vector[n] log_lik;
+  for (i in 1:n) {
+    log_lik[i] = beta_lpdf(whiff_rate[i] | alpha[i], beta[i]); 
+  }
 }'
 ```
 
@@ -227,7 +235,7 @@ composed_fastball <- compose_data(fastball_data)
 refit_model <- FALSE
 model_file <- "fastball_model_fit.RDS"
 if (refit_model){
-  fastball_model_fit <- stan(model_code = stan_beta_fastball,
+  fastball_model_fit <- rstan::stan(model_code = stan_beta_fastball,
                         data = composed_fastball,
                         chains = 4,
                         iter = 2000,
@@ -244,8 +252,137 @@ fastball_model_fit
 ```
 
 
+
+
 ```{r}
-gf_dens(~sim_whiff_rate, group = ~sim_id, 
-        data = prior_pred_dist)
+# Extract posterior samples for relevant parameters
+post_omegas <- fastball_model_fit |>
+  spread_draws(b0, b1, b2, b3, b4, b5, b6, kappa2)
+
 ```
+
+```{r}
+set.seed(2025)
+
+# Generate predicted omega values and simulated whiff rates
+posterior_pred <- post_omegas |>
+  crossing(fastball_data) |>
+  mutate(
+    omega = inv_logit(
+      b0 + b1 * velo +
+      b2 * spin_rate +
+      b3 * extension +
+      b4 * (arm_angle * ivb) +
+      b5 * arm_angle +
+      b6 * ivb
+    ),
+    kappa = kappa2 + 2,
+    alpha = omega * (kappa - 2) + 1,
+    beta = (1 - omega) * (kappa - 2) + 1,
+    sim_whiff_rate = rbeta(n(), shape1 = alpha, shape2 = beta)
+  )
+```
+
+
+
+
+```{r}
+gf_dens(~ sim_whiff_rate | .draw,
+        data = posterior_pred %>% filter(.draw <= 25),
+        alpha = 0.6, color = ~factor(.draw)) %>%
+  gf_labs(title = "Posterior Predictive Distributions of Whiff Rate",
+          x = "Simulated Whiff Rate", y = "Density")
+
+```
+
+```{r}
+gf_dens(~ whiff_rate, data = fastball_data, color = "blue", size = 1.5) %>%
+  gf_dens(~ sim_whiff_rate, group = ~.draw, data = posterior_pred, alpha = 0.2) %>%
+  gf_labs(title = "Posterior Predictive vs. Actual Whiff Rate",
+          x = "Whiff Rate", y = "Density")
+
+```
+
+First, we gathered 25 random prior pred. samples 
+
+```{r}
+stan_minus_fastball <- '
+data {
+  int<lower=1> n;     // number of observations
+  vector<lower=0,upper=1>[n] whiff_rate;    // response
+  vector[n] velo;     // predictor
+  vector[n] spin_rate;     // predictor
+  vector[n] extension;     // predictor
+  vector[n] arm_angle;     // predictor
+  vector[n] ivb;     // predictor
+}
+parameters {
+  real<lower=0> kappa2;  // concentration of beta dist
+  real b0;               // intercept
+  real b2;              // slope for spin_rate
+  real b3;              // slope for extension
+  real b4;              // slope for interaction between arm_angle and ivb
+  real b5;              // slope for arm_angle
+  real b6;              // slope for ivb
+  
+}
+model {
+  vector[n] omega;
+  vector[n] alpha;
+  vector[n] beta;
+  for ( i in 1:n ) {  
+    omega[i] = inv_logit(b0 + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]);
+    alpha[i] = omega[i] * (kappa2) + 1;
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
+  }
+  
+  b0 ~ normal(-1.283235, 1);
+  b2 ~ cauchy(0, 2.5);
+  b3 ~ cauchy(0, 2.5);
+  b4 ~ cauchy(0, 2.5);
+  b5 ~ cauchy(0, 2.5);
+  b6 ~ cauchy(0, 2.5);
+  kappa2 ~ lognormal(0,2);
+  whiff_rate ~ beta(alpha, beta); // have to use alpha, beta parameterization for beta()
+} 
+
+
+generated quantities {
+ // this is not really required - only if you want values of omega, alpha, beta included in your fitted model
+  vector[n] omega;
+  vector[n] alpha;
+  vector[n] beta;
+  for (i in 1:n) {
+    omega[i] = inv_logit(b0 + b2 * spin_rate[i]+ b3 * extension[i]+ b4 * (arm_angle[i] * ivb[i])+ b5 * arm_angle[i]+ b6 * ivb[i]); // if you want stan to compute modes for each data row       dis line
+    alpha[i] = omega[i] * (kappa2) + 1; // if you want the beta parameters alpha and beta for each row
+    beta[i] = (1 - omega[i]) * (kappa2) + 1;
+  }
+  vector[n] log_lik;
+  for (i in 1:n) {
+    log_lik[i] = beta_lpdf(whiff_rate[i] | alpha[i], beta[i]); 
+  }
+}'
+```
+
+```{r}
+refit_model <- FALSE
+model_minus_file <- "fastball_minus_fit.RDS"
+if (refit_model){
+  fastball_minus_fit <- rstan::stan(model_code = stan_minus_fastball,
+                        data = composed_fastball,
+                        chains = 4,
+                        iter = 2000,
+                        refresh = 0)
+  saveRDS(fastball_minus_fit, file = model_minus_file)
+}else{
+  # if you wanted to save an RDS fitted model locally you'd do
+  fastball_minus_fit <- readRDS(model_minus_file)
+}
+```
+
+```{r}
+rethinking::compare(fastball_model_fit,fastball_minus_fit, func=WAIC)
+```
+
+In our model comparison we found that our original model that contains velocity as a predictor is better than our second model that does not include velocity as a predictor. The model is better because the original model's WAIC score is 17.6 below the 2nd model's. While this gives us evidence that the model with velocity is better the SE's for both WAIC scores are both high 187.77 for the model with velocity and 168.76 for the model without. This means that we cannot be certain that the model is in fact better based on the WAIC score alone.
 
