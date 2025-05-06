@@ -63,14 +63,11 @@ fastball_data <- fastball_data %>%
 write.csv(fastball_data, "fastball_data.csv", row.names = FALSE)
 ```
 
-## Data Glimpse
-
 ```{r}
+#glimpse data
 fastball_data <- read.csv("fastball_data.csv")
 glimpse(fastball_data)
 ```
-
-## Standardize and Data
 
 ```{r}
 # Columns to standardize
@@ -127,13 +124,9 @@ Velocity and whiff rate is the main relationship we want to look at, so velocity
 
 ## Model Description
 
-$$\text{whiff rate} \sim \text{beta}(\omega, \kappa)$$ 
-$$\text{logit}(\omega) = \beta_0 + \beta_1*\text{velo}+\beta_2*\text{spin rate}+\beta_3*\text{extension}+\beta_4*\text(\text{arm angle}*\text{ivb})+\beta_5*\text{arm angle}+\beta_6*\text{ivb}$$
-$$\beta_0 \sim \text{Norm}(-1.28, 1.47)$$
-$$\beta_{1-6} \sim \text{Cauchy}(0,2.5)$$ 
-$$\kappa \sim \text{LogNorm}(0,2)$$ 
-$$\alpha = \omega * \kappa + 1$$
-$$\beta = (1 - \omega) * \kappa + 1$$
+$$\text{whiff rate} \sim \text{beta}(\omega, \kappa)$$ $$\text{logit}(\omega) = \beta_0 + \beta_1*\text{velo}+\beta_2*\text{spin rate}+\beta_3*\text{extension}+\beta_4*\text(\text{arm angle}*\text{ivb})+\beta_5*\text{arm angle}+\beta_6*\text{ivb}$$ $$\beta_0 \sim \text{Norm}(-1.28, 1.47)$$ $$\beta_{1-6} \sim \text{Cauchy}(0,2.5)$$ $$\kappa \sim \text{LogNorm}(0,2)$$ $$\alpha = \omega * \kappa + 1$$ $$\beta = (1 - \omega) * \kappa + 1$$
+
+We decided that we needed a beta distribution because our response variable (whiff rate) has limits at 0 and 1 because it is a percentage. Beta distributions work well for distributions where there are upper and lower limits.
 
 ```{r}
 #Mean of wiff rate based on https://www.baseballamerica.com/stories/why-do-mlb-pitchers-focus-so-much-on-velocity-how-fastball-data-explains-baseballs-growing-search-for-speed/
@@ -188,12 +181,13 @@ glimpse(prior_pred_dist)
 gf_dens(~sim_whiff_rate, group = ~sim_id, 
         data = prior_pred_dist)
 ```
+
 ```{r}
 gf_dens(~b1, data = prior_pred_dist) |>
   gf_labs(title = "Prior Predictive Velocity's Slope")
 ```
 
-We had some issues initially with our priors as we started out with priors of all Norm(0,1). This was an issue because we hadn't yet standardized our data. We then standardized the data and switched to Cauchy(0,2.5) for each of the predictors' slopes as this is a good uninformative prior. The only informative prior we were able to add was our intercept. We found the average whiff rate to be .217 (https://www.baseballamerica.com/stories/why-do-mlb-pitchers-focus-so-much-on-velocity-how-fastball-data-explains-baseballs-growing-search-for-speed/) and we believed that .06 was about one standard deviation away based on prior knowledge. We took the logits of these and found the distribution to be Norm(-1.283235, 1.4683). This gave us our current prior predictive distributions which are uninformative but sufficient. The first one gives a generally uniform shape of whiff rate which includes the general shape that we expect. The second one gives a very wide range for the slope of velocity which is to be expected with using the cauchy distribution. We believe these are sufficient because we don't have a lot of prior knowledge on our predictors and we want to give a wide range of possibilities.
+We had some issues initially with our priors as we started out with priors of all Norm(0,1). This was an issue because we hadn't yet standardized our data. We then standardized the data and switched to Cauchy(0,2.5) for each of the predictors' slopes as this is an uninformative prior for beta distributions. If we had more time we would have attempted to research the effects of each of our predictors on whiff rate and set the priors accordingly. We, however, did not have the opportunity to do this. The only informative prior we were able to add was our intercept. We found the average whiff rate to be .217 (Cooper) and we believed that .06 was about one standard deviation away based on prior knowledge. We took the logits of these and found the distribution to be Norm(-1.283235, 1.4683). This gave us our current prior predictive distributions which are uninformative but this is what we expected. The first one gives a generally uniform shape of whiff rate which includes the general shape that we expect. The second one gives a very wide range for the slope of velocity which is to be expected with using the cauchy distribution.
 
 ## Model Fit
 
@@ -304,7 +298,7 @@ gf_dens(~value, data = psamp) |>
   gf_labs(title = "Distribution of Velocity's Slope")
 ```
 
-From the model summary, we can see that b1, the coefficient for velocity, has a mean value of 0.18. The graph shows the spread of the coefficient, which ranges from about 0.05 to 0.3. Since the coefficient is positive, this means that fastball velocity and fastball whiff rate have a positive relationship, or when velocity increases, so does whiff rate. 
+From the model summary, we can see that b1, the coefficient for velocity, has a mean value of 0.18. The graph shows the spread of the coefficient, which ranges from about 0.05 to 0.3. Since the coefficient is positive, this means that fastball velocity and fastball whiff rate have a positive relationship, or when velocity increases, so does whiff rate.
 
 ## Model Comparison
 
@@ -395,4 +389,4 @@ In conclusion, the velocity of 4-seam fastballs thrown by MLB pitchers has a pos
 
 ## Works Cited
 
-Cooper, J.J. “Why Do MLB Pitchers Focus so Much on Fastball Velocity?” College Baseball, MLB Draft, Prospects - Baseball America, Baseball America Enterprises, 21 Aug. 2024, www.baseballamerica.com/stories/why-do-mlb-pitchers-focus-so-much-on-velocity-how-fastball-data-explains-baseballs-growing-search-for-speed/. 
+Cooper, J.J. “Why Do MLB Pitchers Focus so Much on Fastball Velocity?” College Baseball, MLB Draft, Prospects - Baseball America, Baseball America Enterprises, 21 Aug. 2024, www.baseballamerica.com/stories/why-do-mlb-pitchers-focus-so-much-on-velocity-how-fastball-data-explains-baseballs-growing-search-for-speed/.
